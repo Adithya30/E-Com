@@ -29,7 +29,7 @@ export default function Checkout() {
       const { data: { session } } = await supabase.auth.getSession();
 
       if (!session) {
-        addToast("You must be logged in to purchase items!", "info");
+        addToast("You must be logged in to purchase items from Kerala Kissan Kendra!", "info");
         navigate('/login');
       } else {
         setUser(session.user);
@@ -63,31 +63,70 @@ export default function Checkout() {
     setLoading(true);
 
     try {
-      // 1. Prepare Order Data
-      const orderData = {
-        customer_name: formData.name,
-        customer_phone: formData.phone,
-        address: formData.address,
-        total_amount: cartTotal,
-        items: cartItems, // Saves the actual array of items
-        status: 'Pending',
-        // Optional: you can save user_id here if you added that column to your orders table
-        // user_id: user?.id 
-      };
-
-      // 2. Insert into Supabase
-      const { error } = await supabase.from('orders').insert([orderData]);
+      // 1. Create Order on Server (Secure-side calculation)
+      // We pass the items and user details, but price is calculated on backend
+      const { data, error } = await supabase.functions.invoke('create-order', {
+        body: {
+          items: cartItems.map(item => ({
+            id: item.id,
+            qty: item.qty,
+            variant: item.variant // Pass variant info if needed for price lookup
+          })),
+          customer_name: formData.name,
+          customer_phone: formData.phone,
+          address: formData.address
+        }
+      });
 
       if (error) throw error;
+      if (!data?.order_id) throw new Error("Failed to create order ID");
 
-      // 3. Success!
-      addToast("Order Placed Successfully! We will contact you shortly.", "success");
-      clearCart(); // Empty the cart
-      navigate('/'); // Go back to Home
+      // 2. Open Razorpay
+      const options = {
+        key: data.key_id,
+        amount: data.amount * 100, // Amount is in paise (already converted? function returns amount in rupees, let's check. logic says 'amount: calculatedTotal * 100' in edge function return? No, function returns calculatedTotal from DB price. Edge Function creates razorpay order with *100. Let's make sure we use the same.)
+        // Actually, the Edge Function returns `amount: calculatedTotal` (Rupees). Razorpay JS expects paise if we don't pass order_id? 
+        // But we ARE passing order_id. So 'amount' in options is strictly for display if order_id is present, but Razorpay uses the order's amount.
+        // Let's pass what we got.
+        currency: data.currency,
+        name: "Kerala Kissan Kendra",
+        description: "Plant Order",
+        order_id: data.order_id,
+        handler: function (response) {
+          // 3. Payment Success - Webhook will handle DB insertion securely.
+          // We can redirect to a success page.
+          console.log("Payment Successful:", response);
+          addToast("Payment Successful! Order placed.", "success");
+          clearCart();
+          navigate('/?payment=success');
+        },
+        prefill: {
+          name: formData.name,
+          contact: formData.phone,
+          email: user?.email // Pre-fill email if available
+        },
+        theme: {
+          color: "#10B981"
+        }
+      };
+
+      const rzp1 = new window.Razorpay(options);
+      rzp1.on('payment.failed', function (response) {
+        console.error("Payment Failed:", response.error);
+        addToast("Payment Failed: " + response.error.reason, "error");
+      });
+      rzp1.open();
 
     } catch (error) {
-      console.error("Order Error:", error);
-      addToast("Failed to place order. Please try again.", "error");
+      console.error("Full Order Error:", error);
+      // Try to extract useful info if it's a Supabase error
+      let errorMsg = error.message || "Unknown error";
+      if (error && error.context && error.context.json) {
+        // Sometimes the body is in error.context.json() if using fetch directly, 
+        // but supabase-js handles it differently. 
+        // Let's just log it for now.
+      }
+      addToast("Failed to initiate payment. " + errorMsg, "error");
     } finally {
       setLoading(false);
     }
