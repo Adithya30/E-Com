@@ -120,11 +120,16 @@ export default function Checkout() {
     } catch (error) {
       console.error("Full Order Error:", error);
       // Try to extract useful info if it's a Supabase error
+      // Improved error handling to show Supabase Function error
       let errorMsg = error.message || "Unknown error";
-      if (error && error.context && error.context.json) {
-        // Sometimes the body is in error.context.json() if using fetch directly, 
-        // but supabase-js handles it differently. 
-        // Let's just log it for now.
+
+      if (error && error.context && typeof error.context.json === 'function') {
+        const body = await error.context.json();
+        console.error("Error Body:", body);
+        if (body.error) errorMsg = body.error;
+      } else if (error && error.code) {
+        // If it's a database error that bubbled up
+        errorMsg = `DB Error: ${error.message} (${error.code})`;
       }
       addToast("Failed to initiate payment. " + errorMsg, "error");
     } finally {

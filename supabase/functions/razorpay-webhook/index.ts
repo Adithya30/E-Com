@@ -31,10 +31,11 @@ serve(async (req) => {
 
         const event = JSON.parse(body)
 
-        // 2. Handle 'order.paid' event (or payment.captured)
+        // 2. Handle 'order.paid' event
+        // This event confirms that the order is fully paid.
         if (event.event === 'order.paid') {
-            const payload = event.payload.order.entity
-            const notes = payload.notes
+            const orderPayload = event.payload.order.entity
+            const paymentPayload = event.payload.payment ? event.payload.payment.entity : null
 
             // 3. Initialize Admin Client (Service Role)
             const supabase = createClient(
@@ -42,23 +43,19 @@ serve(async (req) => {
                 Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
             )
 
-            // 4. Create Order in DB (Strictly Backend)
-            // We parse the items back from the notes we saved earlier
-            const items = JSON.parse(notes.items)
+            // 4. UPDATE existing Order in DB
+            const { error: updateError } = await supabase
+                .from('orders')
+                .update({
+                    status: 'Pending', // Mark as Paid/Confirmed
+                    payment_id: paymentPayload ? paymentPayload.id : 'confirmed_no_id'
+                })
+                .eq('order_id', orderPayload.id)
 
-            const { error } = await supabase.from('orders').insert([{
-                user_id: notes.user_id, // Add user_id to link order to user
-                customer_name: notes.customer_name,
-                customer_phone: notes.customer_phone,
-                address: notes.address,
-                total_amount: payload.amount / 100, // Convert back to Rupees
-                items: items,
-                status: 'Pending',
-                payment_id: event.payload.payment.entity.id, // Save payment ref
-                order_id: payload.id
-            }])
-
-            if (error) throw error
+            if (updateError) {
+                console.error("Webhook Update Error:", updateError)
+                throw updateError
+            }
         }
 
         return new Response(JSON.stringify({ received: true }), {

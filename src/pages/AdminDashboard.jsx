@@ -67,7 +67,9 @@ export default function AdminDashboard() {
   const fetchOrders = async () => {
     const { data, error } = await supabase
       .from('orders')
-      .select('*'); // Fetch all, we sort in JS for custom logic
+      .select('*')
+      .neq('status', 'Pending Payment') // HIDE Unpaid/Abandoned checkouts
+      .not('payment_id', 'is', null); // HIDE anything without a payment ID (strict check)
 
     if (data) {
       // Sort: Pending (Oldest) -> Shipped (New) -> Delivered (New)
@@ -333,13 +335,26 @@ export default function AdminDashboard() {
                         placeholder="New Category"
                         className="w-full border p-3 rounded-lg focus:ring-2 focus:ring-primary-200 outline-none transition"
                         autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault(); // Stop form submission
+                            if (newCategoryName.trim()) {
+                              const newCat = newCategoryName.trim();
+                              setCategories(prev => [...new Set([...prev, newCat])]);
+                              setForm(prev => ({ ...prev, category: newCat }));
+                              setNewCategoryName("");
+                              setIsAddingCategory(false);
+                            }
+                          }
+                        }}
                       />
                       <button
                         type="button"
                         onClick={() => {
                           if (newCategoryName.trim()) {
-                            setCategories(prev => [...new Set([...prev, newCategoryName.trim()])]);
-                            setForm({ ...form, category: newCategoryName.trim() });
+                            const newCat = newCategoryName.trim();
+                            setCategories(prev => [...new Set([...prev, newCat])]);
+                            setForm(prev => ({ ...prev, category: newCat }));
                             setNewCategoryName("");
                             setIsAddingCategory(false);
                           }

@@ -42,14 +42,25 @@ serve(async (req) => {
             throw new Error('Failed to fetch product prices')
         }
 
+        if (!items || !Array.isArray(items) || items.length === 0) {
+            throw new Error("Invalid items array")
+        }
+
         let calculatedTotal = 0
+        const enrichedItems = [] // Store full item details for DB
 
         // Match items with DB products to get real price
         for (const item of items) {
+            if (!item.id || !item.qty || item.qty < 1) {
+                console.warn("Skipping invalid item:", item)
+                continue
+            }
+
             const product = products.find(p => p.id === item.id)
             if (!product) continue
 
             let price = product.price
+            let variantName = null
 
             // If variant, find variant price
             // Note: In a real app, you'd fetch variant prices securely too. 
@@ -59,31 +70,60 @@ serve(async (req) => {
                 const dbVariant = product.variants?.find((v: any) => v.name === item.variant.name)
                 if (dbVariant) {
                     price = dbVariant.price
+                    variantName = dbVariant.name
                 }
             }
 
             calculatedTotal += price * item.qty
+
+            // Add to enriched items
+            enrichedItems.push({
+                ...item,
+                name: product.name,
+                price: price, // Store unit price for display
+                variant: item.variant // Keep variant details if needed
+            })
+        }
+
+        if (calculatedTotal === 0) {
+            throw new Error("Order total cannot be zero")
         }
 
         // 3. Initialize Razorpay
-        const razorpay = new Razorpay({
-            key_id: Deno.env.get('RAZORPAY_KEY_ID'),
-            key_secret: Deno.env.get('RAZORPAY_KEY_SECRET'),
+        const instance = new Razorpay({
+            key_id: Deno.env.get('RAZORPAY_KEY_ID') ?? '',
+            key_secret: Deno.env.get('RAZORPAY_KEY_SECRET') ?? '',
         })
 
-        // 4. Create Order on Razorpay
-        const order = await razorpay.orders.create({
+        // Create Razorpay Order
+        const order = await instance.orders.create({
             amount: calculatedTotal * 100, // Amount in paise
             currency: "INR",
             receipt: `receipt_${Date.now()}`,
-            notes: {
-                user_id: user.id,
-                customer_name,
-                customer_phone,
-                address,
-                items: JSON.stringify(items) // Store items in notes for Webhook to retrieve
-            }
         })
+
+        // 4. Save to Supabase (Pending Payment) using Service Role Key to bypass RLS
+        const supabaseAdmin = createClient(
+            Deno.env.get('SUPABASE_URL') ?? '',
+            Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+        )
+
+        const { error: insertError } = await supabaseAdmin.from('orders').insert([{
+            user_id: user.id,
+            customer_name,
+            customer_phone,
+            address,
+            total_amount: calculatedTotal,
+            items: enrichedItems, // Use the enriched items with name/price
+            status: 'Pending', // Revert to standard status to avoid constraint errors
+            order_id: order.id, // Razorpay Order ID to match later
+            payment_id: null
+        }])
+
+        if (insertError) {
+            console.error("DB Insert Error:", insertError)
+            throw new Error("Failed to create order record")
+        }
 
         // Return the Order ID and Calculated Amount to frontend
         return new Response(
@@ -100,6 +140,7 @@ serve(async (req) => {
         )
 
     } catch (error) {
+        console.error("Function Error:", error)
         return new Response(
             JSON.stringify({ error: error.message }),
             {
